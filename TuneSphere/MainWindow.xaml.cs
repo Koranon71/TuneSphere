@@ -1,20 +1,19 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Data.SqlClient;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
-using NAudio.Gui;
 using NAudio.Wave;
 
 namespace TuneSphere
 {
     public partial class MainWindow : Window
     {
-        private string connectionString = "Server=Koranon;Database=TuneSDB;Trusted_Connection=True;";
+        private string dbFilePath = "DB.txt";
         private ObservableCollection<Track> tracks;
         private bool isPlaying = false;
 
@@ -47,7 +46,6 @@ namespace TuneSphere
                 AudioFilePath.Text = openFileDialog.FileName;
             }
         }
-
         private void AddTrackButton_Click(object sender, RoutedEventArgs e)
         {
             string title = TitleTextBox.Text;
@@ -58,10 +56,9 @@ namespace TuneSphere
             if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(author) ||
                 string.IsNullOrEmpty(coverImage) || string.IsNullOrEmpty(audioFile))
             {
-                MessageBox.Show("Please fill in all fields.");
+                MessageBox.Show("Заполните все поля перед добавлением файла");
                 return;
             }
-
             TimeSpan audioDuration;
             try
             {
@@ -69,61 +66,48 @@ namespace TuneSphere
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error reading audio file: {ex.Message}");
+                MessageBox.Show($"Ошибка чтения аудио файла: {ex.Message}");
                 return;
             }
-
-            using (SqlConnection connection = new SqlConnection(connectionString))
+            int newTrackId = tracks.Count > 0 ? tracks.Max(t => t.Id) + 1 : 1;
+            string trackData = $"{newTrackId},{title},{author},{audioDuration},{audioFile},{coverImage}";
+            File.AppendAllText(dbFilePath, trackData + Environment.NewLine);
+            tracks.Add(new Track
             {
-                string query = "INSERT INTO tracks (title, author, cover_image, audio_file, audio_length) VALUES (@title, @author, @coverImage, @audioFile, @audioLength); SELECT SCOPE_IDENTITY();";
-                SqlCommand command = new SqlCommand(query, connection);
-                command.Parameters.AddWithValue("@title", title);
-                command.Parameters.AddWithValue("@author", author);
-                command.Parameters.AddWithValue("@coverImage", coverImage);
-                command.Parameters.AddWithValue("@audioFile", audioFile);
-                command.Parameters.AddWithValue("@audioLength", audioDuration);
-
-                connection.Open();
-                int newTrackId = Convert.ToInt32(command.ExecuteScalar());
-                MessageBox.Show("Track added successfully!");
-
-                tracks.Add(new Track
-                {
-                    Id = newTrackId,
-                    Title = title,
-                    Author = author,
-                    AudioLength = audioDuration.ToString(@"hh\:mm\:ss"),
-                    AudioFile = audioFile,
-                    CoverImage = new BitmapImage(new Uri(coverImage))
-                });
-            }
+                Id = newTrackId,
+                Title = title,
+                Author = author,
+                AudioLength = audioDuration.ToString(@"hh\:mm\:ss"),
+                AudioFile = audioFile,
+                CoverImage = new BitmapImage(new Uri(coverImage))
+            });
+            MessageBox.Show("Трек успешно добавлен");
         }
-
         private void LoadTracks()
         {
             tracks.Clear();
-            using (SqlConnection connection = new SqlConnection(connectionString))
-            {
-                string query = "SELECT id, title, author, audio_length, audio_file, cover_image FROM tracks";
-                SqlCommand command = new SqlCommand(query, connection);
-                connection.Open();
 
-                using (SqlDataReader reader = command.ExecuteReader())
+            if (File.Exists(dbFilePath))
+            {
+                var lines = File.ReadAllLines(dbFilePath);
+                foreach (var line in lines)
                 {
-                    while (reader.Read())
+                    var parts = line.Split(',');
+
+                    if (parts.Length == 6)
                     {
-                        int id = reader.GetInt32(0);
-                        string title = reader.GetString(1);
-                        string author = reader.GetString(2);
-                        string audioLength = reader.GetTimeSpan(3).ToString(@"hh\:mm\:ss");
-                        string audioFile = reader.GetString(4);
-                        string coverImagePath = reader.GetString(5);
+                        int id = int.Parse(parts[0]);
+                        string title = parts[1];
+                        string author = parts[2];
+                        TimeSpan audioLength = TimeSpan.Parse(parts[3]);
+                        string audioFile = parts[4];
+                        string coverImagePath = parts[5];
                         tracks.Add(new Track
                         {
                             Id = id,
                             Title = title,
                             Author = author,
-                            AudioLength = audioLength,
+                            AudioLength = audioLength.ToString(@"hh\:mm\:ss"),
                             AudioFile = audioFile,
                             CoverImage = new BitmapImage(new Uri(coverImagePath))
                         });
@@ -131,30 +115,18 @@ namespace TuneSphere
                 }
             }
         }
-
         private void DeleteTrackButton_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is int trackId)
             {
-                using (SqlConnection connection = new SqlConnection(connectionString))
-                {
-                    string query = "DELETE FROM tracks WHERE id = @id";
-                    SqlCommand command = new SqlCommand(query, connection);
-                    command.Parameters.AddWithValue("@id", trackId);
-
-                    connection.Open();
-                    command.ExecuteNonQuery();
-                }
-
-                // Remove the track from the list
                 var trackToRemove = tracks.FirstOrDefault(t => t.Id == trackId);
                 if (trackToRemove != null)
                 {
                     tracks.Remove(trackToRemove);
                 }
+                File.WriteAllLines(dbFilePath, tracks.Select(t => $"{t.Id},{t.Title},{t.Author},{t.AudioLength},{t.AudioFile},{t.CoverImage}"));
             }
         }
-
         private void PlayTrackButton_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is string audioFile)
@@ -163,7 +135,6 @@ namespace TuneSphere
                 AudioPlayer.Play();
             }
         }
-
         private void PlayButton_Click(object sender, RoutedEventArgs e)
         {
             AudioPlayer.Play();
@@ -173,12 +144,12 @@ namespace TuneSphere
             if (isPlaying)
             {
                 AudioPlayer.Pause();
-                PlayPauseButton.Content = "Play";
+                PlayPauseButton.Content = "▶️";
             }
             else
             {
                 AudioPlayer.Play();
-                PlayPauseButton.Content = "Pause";
+                PlayPauseButton.Content = "⏸️";
             }
             isPlaying = !isPlaying;
         }
@@ -186,7 +157,7 @@ namespace TuneSphere
         {
             AudioPlayer.Stop();
             isPlaying = false;
-            PlayPauseButton.Content = "Play";
+            PlayPauseButton.Content = "▶️";
         }
         private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
@@ -196,7 +167,6 @@ namespace TuneSphere
             }
         }
     }
-
     public class Track
     {
         public int Id { get; set; }
@@ -206,16 +176,14 @@ namespace TuneSphere
         public string AudioFile { get; set; }
         public BitmapImage CoverImage { get; set; }
     }
-
     public static class AudioFileHelper
     {
         public static TimeSpan GetAudioDuration(string filePath)
         {
             if (string.IsNullOrEmpty(filePath))
             {
-                throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
+                throw new ArgumentException("Путь к файлу не может быть пустым", nameof(filePath));
             }
-
             using (var audioFileReader = new AudioFileReader(filePath))
             {
                 return audioFileReader.TotalTime;
